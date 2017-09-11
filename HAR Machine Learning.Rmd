@@ -1,0 +1,130 @@
+---
+title: "HAR - Predictive Modeling using Machine Learning"
+author: "Karthic Chandran"
+date: "September 11, 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
+```
+
+```{r Loading_Preprocessing}
+# Load required Libraries
+library(caret)
+
+```
+
+#Executive Summary
+
+Can data collected by wearable tech gear like Jawbone Up, Nike, FuelBand and Fitbit can be used to create a predictive model that can potentially train us the right way to do an exercise? As this analysis will show, it is quite possible. The data is coming from (http://groupware.les.inf.puc-rio.br/har). The machine learning algorithms training by the training data set is shown to reach an accuracy of 100% in classifying if the bicep curl is done correctly. 
+
+
+### Data Format
+
+The training data comes from https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv and it has 19622 observations of 159 variables of bio-kinetic data collected by the wearable tech gears. The goal of this analysis is to see if can correctly classify the observations into 5 classes A,B,C,D,E. With A is the 'correct' way of doing the exercise and others the 'incorrect' ways.
+
+
+## Exploratory data analysis
+
+A quick summary of the data shows this data set has 60 variables that are near zero values. So they are removed to reduce the noise in the data set. A further analysis of the reduced data set thru summary function still reveal that 41 more variables have NAs for 98% percent of the observations. These variables aren't unique enought to be features so they are also removed to get a much reduced varialbles set. Finally the use identifier variables are also removed to get a final reduced data set with 56 columns down from the original 160 columns
+
+```{r exploratory data analysis}
+
+pmlTrain <- read.csv("pml-training.csv")
+
+#remove the near zero value variables
+nzv1 <- nearZeroVar(pmlTrain)
+pmlTrain1 <- pmlTrain[,-nzv1]
+
+# remove user identifier variables
+pmlTrain1 <- pmlTrain1[,-c(1,2)]
+
+#remove variables that aren't unique enough to be useful as predictors. ie NAs for 98% of observations
+pmlTrain2 <- pmlTrain1[,colSums(is.na(pmlTrain1)) != 19216]
+```
+
+## Model Selection
+
+This goal of this analysis classification. The predictors are used to classify the observations into 5 different groups. Regression models aren't good candidate for this analysis and hence they aren't tried. The simplest algorithm first trained on the data set is a decision tree. The 'rpart' model trained has a accuracy of about 50%. This isn't good enough but at least this proved that classification tree based algorithms are good candidates for training. So Bagging and Boosting algorithms should yield better accuracy.
+
+Random forest algorithm with default trainControl (bootstrapping with 25 resampling with accuracy as the metric) is trained on the test dataset to start with. The resulting accuracy is a staggering 99.74%. This is quite good. The final model used an aggregation of 500 trees with 28 random variables used in each split. The average out of Bag (OOB) error of 0.02% across the samples. This clearly shows that this model is almost perfect.
+
+A boosting algorith caret method = 'gbm' is tried next to see if it can reach the accuracy of the Random forest. At an interaction.depth = 3 and n.trees = 100, the model reached an accuracy of 99.55% (training error approaching 0.43% ). This is also quite good and almost on-par with the random forest.
+
+## Challenging Model
+
+When these models are challenged with the testing dataset that has 25% of the original data (5885 rows), they predicted quite well. 'rf' got a prediction accuracy of 99.97% and 'gbm' an accuracy of 99.66%
+
+```{r Model Selection}
+
+# creating training and testing partitions
+inTrain <- createDataPartition(y = pmlTrain2$classe, p = 0.7, list = FALSE)
+training <- pmlTrain2[inTrain, ]
+testing <- pmlTrain2[-inTrain,]
+
+
+# This is a classification tree model. So the first obvious choice is to look use the 'classification tree'
+modfitRPart <- train(classe ~ ., data = training, method = "rpart")
+#Accuracy of this classification tree is too low. Time for some bagging
+modfitRPart$results
+
+
+# Random Forest
+modfitRF <- train(classe ~ ., data = training, method = "rf")
+# wow 99.74% accuracy i.e 0.26% in sample error rate using default trainControl params. ie using Bootstrap with 25 resampling
+modfitRF
+sprintf("Avg out of Sample Error Rate %f",round(mean(modfitRF$finalModel$err.rate[1]),2))
+
+pRF <-  predict(modfitRF, testing)
+# wow 99.97 accuracy in predicting testing data
+confusionMatrix(pRF, testing$classe)
+
+```
+
+```{r Boosting, results = "hide"}
+#Boosting
+modfitBoost <- train(classe ~ ., data = training, method = "gbm")
+```
+
+``` {r Boosting Continued}
+# 99.55% accuracy in-sample
+modfitBoost
+
+pBoost <-  predict(modfitBoost, testing)
+#99.66% accuracy in predicting test data
+confusionMatrix(pBoost, testing$classe)
+
+```
+
+### Model Stacking
+
+The "RF" and "GBM" algorithm trained models have achieved > than 99.5% accuracy. Now model stacking is attempted on them to see if their accuracy can be pushed even higher. For this a seperate validation set is created from the traning data. The 'rf' and 'gbm' model predeictions are combined with the classe variable they are predicting in a data frame and this is used as the training data to train the stacked model. The resulting model has an accuracy of 99.97% and training error approaching 0.004%. This model is then used to predict on the validation data set of (25% of data ie 5885 observations). It got a prediction accuracy of 100%.
+
+``` {r Model Stacking, results = "hide"}
+# Building and Training Stacked Model
+DFpredComboBagBoost <- data.frame(pRF, pBoost,  classe = testing$classe)
+modfitComboBagBoost <- train(classe ~., data = DFpredComboBagBoost, method = "gbm")
+```
+
+```{r Model Stacking Continued}
+
+inTrain2 <- createDataPartition(y = pmlTrain2$classe, p = 0.7, list = FALSE)
+validation <- pmlTrain2[-inTrain2,]
+
+
+#Prediction on Validation Set
+pRFV <- predict(modfitRF, validation)
+pBoostV <- predict(modfitBoost, validation)
+DFpredComboBagBoostV <- data.frame(pRF = pRFV, pBoost = pBoostV)
+pcomboBagBoostV <- predict(modfitComboBagBoost, DFpredComboBagBoostV)
+
+# Prediction accuracy of 100%
+confusionMatrix(pcomboBagBoostV, validation$classe)
+```
+
+## References
+
+1. Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises(http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201). Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013
